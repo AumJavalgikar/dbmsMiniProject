@@ -8,6 +8,7 @@ import re
 import mysql.connector
 from dotenv import load_dotenv
 import os
+import json
 
 
 ASK_FOR_QUERY = range(1)
@@ -18,35 +19,47 @@ class AIQuery:
         self.user_followup_responses = []
         self.ai_followup_responses = []
         self.more_info_needed = False
-        self.final_sql_query = None
+        self.final_sql_queries = None
 
 def parse_response(query, response_text, query_object:AIQuery):
     print(f'In parse response, response_text : {response_text}')
     response_type_regex = re.compile(r'"response_type":\s*"([A-Za-z_]+)"')
     more_info_regex = re.compile(r'"more_info_text":\s*"(.*?)"')
-    sql_query_regex = re.compile(r'"sql_query":\s*"(.*?)"')
+    sql_query_regex = re.compile(r'"sql_queries":\s*"(.*?)"')
+    json_response = json.loads(response_text)
 
-    match = re.search(response_type_regex, response_text)
-    if not match:
+
+    # match = re.search(response_type_regex, response_text)
+    # if not match:
+    #     raise ValueError('Did not find response_type field in OpenAI response')
+
+    # response_type = match.group(1)
+    response_type = json_response.get('response_type')
+    if response_type is None:
         raise ValueError('Did not find response_type field in OpenAI response')
 
-    response_type = match.group(1)
-
     if response_type == 'more_info':
-        match = re.search(more_info_regex, response_text)
-        if not match:
+        # match = re.search(more_info_regex, response_text)
+        # if not match:
+        #     raise ValueError('Did not find a match for more_info_text in response!')
+
+        # more_info_text = match.group(1)
+        more_info_text = json_response.get('more_info_text')
+        if more_info_text is None:
             raise ValueError('Did not find a match for more_info_text in response!')
-        more_info_text = match.group(1)
         print(f'Appended {more_info_text} to ai_followup responses')
         query_object.ai_followup_responses.append(more_info_text)
         query_object.user_followup_responses.append(query)
 
-    elif response_type == 'sql_query':
-        match = re.search(sql_query_regex, response_text)
-        if not match:
+    elif response_type == 'sql_queries':
+        # match = re.search(sql_query_regex, response_text)
+        # if not match:
+        #     raise ValueError('Did not find a match for sql_query in response!')
+        # sql_query = match.group(1)
+        sql_queries = json_response.get('sql_queries')
+        if sql_queries is None:
             raise ValueError('Did not find a match for sql_query in response!')
-        sql_query = match.group(1)
-        query_object.final_sql_query = sql_query
+        query_object.final_sql_queries = sql_queries
     else:
         raise ValueError(f'Unknown response type : {response_type}')
 
@@ -56,14 +69,38 @@ async def query_openai_llm(query, query_object: AIQuery):
         model="gpt-3.5-turbo",
         messages=[
             {"role": "system", "content": "You are an expert database engineer, you have to create sql queries for the following database schema:\n"
-                                          "Student("
-                                          "student_id int primary key,"
-                                          "name varchar(20));\n"
-                                          "registration("
-                                          "reg_id int primary key,"
-                                          "student_id int references Student(student_id)"
-                                          ");"
-                                          "CREATE TABLE attendance (AID int primary key, month int, year int, student_id int references Student(student_id));"
+                                          """
+                                          mysql> create table administrator(
+                                          -> admin_id int,admin_name varchar(20),password int,primary key(admin_id));
+                                          
+                                          mysql> create table department(
+                                          -> dept_id int ,department_name varchar (20),
+                                          -> primary key(dept_id));
+                                          
+                                          mysql> create table student(
+                                          -> roll_no int,s_name varchar(20),address varchar(20),cont_no int,primary key(roll_no))
+                                          -> dept_id references department(dept_id);
+                                          
+                                          mysql> create table course(
+                                          -> course_id int, c_name varchar (20),qualification varchar(20),experience varchar(20),dept_id int,
+                                          -> foreign key (dept_id) references department(dept_id));
+                                                                          
+                                          mysql> create table attendance(
+                                        -> dept_id int,roll_no int,s_name varchar (20),course varchar(20),percentage int,
+                                        -> foreign key (roll_no) references student(roll_no),
+                                        -> foreign key (dept_id) references department(dept_id));
+                                        
+                                        mysql> create table section(
+                                        -> section_id int,section_name varchar (20),dept_id int ,
+                                        -> primary key(section_id),
+                                        -> foreign key (dept_id) references department(dept_id));
+                                          
+                                        mysql> create table exam(
+                                        -> reg_no int,marks int,course varchar(20),
+                                        -> dept_id int,
+                                        -> primary key(reg_no),
+                                        -> foreign key (dept_id) references department(dept_id));
+                                          """
                                           "Your conversation history with the client:\n"
                                           f"User responses : {query_object.user_followup_responses}\n"
                                           f"Your responses : {query_object.ai_followup_responses}\n\n"
@@ -71,17 +108,17 @@ async def query_openai_llm(query, query_object: AIQuery):
                                           f'if the client is asking to insert information they MUST provide values for EVERY field\n'
                                           f'Same goes for other things, like creating tables, even fetching data!\n'
                                           f' if you have sufficient information go ahead and create the sql query.\n'
-                                          f'you MUST generate the response in the following format:'
-                                          f'{{response_type: \"more_info\"/\"sql_query\"\n'
+                                          f'you MUST generate the response in the following json format:'
+                                          f'{{"response_type": \"more_info\"/\"sql_queries\"\n'
                                           f'more_info_text: \"request client for more information according to your needs within quotes\"\n'
-                                          f'sql_query: \"generate sql query according to the clients needs within double quotes\"\n'
+                                          f'sql_queries: ["generate sql query according to the clients needs within double quotes, generate more than one if needed",'
+                                          f'"sql query 2", "sql query 3"...]}}\n'
 
              },
             {"role": "user", "content": f'The client has communicated the following :\n\n'
                                         f'{query}\n\n'
-                                        f'Before generating the information, take a deep breath, look at the rules provided and generate your response now, '
-                                        f'make sure no additional information is required from the client, better safe than sorry.'
-                                        f'Now generate the response.'
+                                        f'Before generating the information, take a deep breath, look at the rules provided before generating the response, '
+                                        f'Now generate ONLY the json response, do not include any additional text besides the json response, {{..'
              },
             {"role": "assistant", "content": ""},
         ]
@@ -103,8 +140,7 @@ async def ai_sql_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ASK_FOR_QUERY
 
 
-def evaluate_query(query_object: AIQuery):
-    sql_query = query_object.final_sql_query
+def evaluate_query(sql_query: str):
 
     mydb = mysql.connector.connect(
         host="localhost",
@@ -117,7 +153,11 @@ def evaluate_query(query_object: AIQuery):
 
     if 'create' in sql_query.lower():
         mydb.commit()
-        return f'operation successful!'
+        return f'create operation successful!'
+
+    elif 'drop' in sql_query.lower():
+        mydb.commit()
+        return f'drop operation successful!'
 
     elif 'update' in sql_query.lower():
         mydb.commit()
@@ -127,7 +167,11 @@ def evaluate_query(query_object: AIQuery):
         mydb.commit()
         return f'successfully inserted {mycursor.rowcount} row (s)'
 
-    elif 'select' in sql_query.lower():
+    elif 'alter' in sql_query.lower():
+        mydb.commit()
+        return f'alter operation successful!'
+
+    elif 'select' or 'show' in sql_query.lower():
         results = mycursor.fetchall()
         columns = f"{' '.join(key for key in results[0].keys())}\n"
         return columns + '\n'.join([' '.join([str(element) for element in inner_dict.values()]) for inner_dict in results])
@@ -137,20 +181,23 @@ def evaluate_query(query_object: AIQuery):
         return 'operation successful!'
 
 
-
 async def query_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.effective_message.text
-    query_object = context.user_data.setdefault('query_info', AIQuery(query=query))
+    query_object: AIQuery = context.user_data.setdefault('query_info', AIQuery(query=query))
     await query_openai_llm(query, query_object=query_object)
     print(f'ai_followup responses : {query_object.ai_followup_responses}')
     print(f'user_followup responses : {query_object.user_followup_responses}')
 
-    if query_object.final_sql_query is None:
+    if query_object.final_sql_queries is None:
         await update.effective_message.reply_text(query_object.ai_followup_responses[-1])
         return ASK_FOR_QUERY
 
-    query_result = evaluate_query(query_object)
-    await update.effective_message.reply_text(f'Here is the result of your query:\n\n{query_result}\n\nTo start a new query use command /aiquery')
+    query_results = []
+    for query in query_object.final_sql_queries:
+        query_results.append(evaluate_query(query))
+
+    query_results = '\n'.join(query_results)
+    await update.effective_message.reply_text(f'Here is the result of your query:\n\n{query_results}\n\nTo start a new query use command /aiquery')
     context.user_data.clear()
     return ConversationHandler.END
 
